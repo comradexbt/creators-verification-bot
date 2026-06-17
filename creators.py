@@ -36,12 +36,11 @@ def keep_alive():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_msg = (
         "👋 Welcome to the Web3 Creators Club!\n\n"
-        "To get verified and receive your exclusive invites, please send the link to your Twitter/Web3 profile "
-        "along with a screenshot of the analytics for your last 3 posts."
+        "To get verified and receive your exclusive invites, please send the link to your Twitter/X profile or username."
     )
     await update.message.reply_text(welcome_msg)
 
-# 2. Jab user apni details aur screenshot bhejay
+# 2. Jab user apni details bhejay
 async def handle_application(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text if update.message.text else "[Screenshot/Media attached]"
     user = update.message.from_user
@@ -49,7 +48,7 @@ async def handle_application(update: Update, context: ContextTypes.DEFAULT_TYPE)
     username = f"@{user.username}" if user.username else user.first_name
 
     # User ko confirmation message
-    await update.message.reply_text("⏳ Your application has been submitted to the admin team. Please wait while we review your metrics.")
+    await update.message.reply_text("⏳ Your application has been submitted to the admin team. Please wait while we review your profile.")
 
     # Admin ke liye buttons
     keyboard = [
@@ -63,7 +62,6 @@ async def handle_application(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     try:
         if update.message.photo:
-            # Agar user ne screenshot bheja hai toh photo forward karega
             photo_file_id = update.message.photo[-1].file_id
             caption = f"🚨 **New Creator Application (With Image)** 🚨\n\n👤 User: {username}\n🆔 ID: {user_id}\n📝 Caption: {update.message.caption or 'No caption'}"
             await context.bot.send_photo(chat_id=ADMIN_ID, photo=photo_file_id, caption=caption, reply_markup=reply_markup)
@@ -90,7 +88,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         try:
             await context.bot.send_message(chat_id=user_id, text=success_msg, parse_mode='Markdown')
-            # Admin ke pas message update ho jayega
             if query.message.caption:
                 await query.edit_message_caption(caption=f"{query.message.caption}\n\n**Status:** ✅ Approved")
             else:
@@ -99,10 +96,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logging.error(f"Could not send approval to user: {e}")
         
     elif action == 'deny':
-        sorry_msg = "😔 Sorry! Your profile currently does not meet our minimum requirements (1000+ followers & 1000+ impressions). Keep grinding and feel free to apply again later!"
+        # Decline message updated to remove specific impressions requirement
+        sorry_msg = "😔 Sorry! Your profile currently does not meet our minimum requirements. Keep grinding and feel free to apply again later!"
         try:
             await context.bot.send_message(chat_id=user_id, text=sorry_msg)
-            # Admin ke pas message update ho jayega
             if query.message.caption:
                 await query.edit_message_caption(caption=f"{query.message.caption}\n\n**Status:** ❌ Declined")
             else:
