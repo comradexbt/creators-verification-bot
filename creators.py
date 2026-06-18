@@ -5,7 +5,7 @@ from threading import Thread
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
-# Logging setup taake errors ka pata chal sake
+# Logging setup
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # Aap ki Bot aur Admin Details
@@ -16,7 +16,7 @@ ADMIN_ID = 7323039280
 TG_LINK = "https://t.me/+CYbefSUioG5iNDU0"
 DISCORD_LINK = "https://discord.gg/Fe76WxwSv"
 
-# ===== DUMMY WEB SERVER (Bot ko 24/7 zinda rakhne ke liye) =====
+# ===== DUMMY WEB SERVER =====
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -30,7 +30,7 @@ def run_flask():
 def keep_alive():
     t = Thread(target=run_flask)
     t.start()
-# ==============================================================
+# ============================
 
 # 1. Jab user bot ko /start bhejay
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -42,10 +42,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # 2. Jab user apni details bhejay
 async def handle_application(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text if update.message.text else "[Screenshot/Media attached]"
+    raw_text = update.message.text if update.message.text else ""
     user = update.message.from_user
     user_id = user.id
     username = f"@{user.username}" if user.username else user.first_name
+
+    # === X (Twitter) Link Smart Generator ===
+    if raw_text:
+        # Agar user ne text mein khud hi poora link daal diya hai
+        if "x.com" in raw_text.lower() or "twitter.com" in raw_text.lower() or "http" in raw_text.lower():
+            final_link = raw_text
+        else:
+            # Agar sirf naam ya @naam bheja hai, toh usay pakar kar clean karein
+            clean_username = raw_text.replace("@", "").strip().split()[0]
+            final_link = f"https://x.com/{clean_username}"
+    else:
+        final_link = "[No Text / Only Media Attached]"
+    # ========================================
 
     # User ko confirmation message
     await update.message.reply_text("⏳ Your application has been submitted to the admin team. Please wait while we review your profile.")
@@ -57,13 +70,14 @@ async def handle_application(update: Update, context: ContextTypes.DEFAULT_TYPE)
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Admin ko notification bhejna
-    admin_text = f"🚨 **New Creator Application** 🚨\n\n👤 User: {username}\n🆔 ID: {user_id}\n🔗 Data: {user_text}"
+    # Admin ko notification bhejna (Ab yahan clean link aayega)
+    admin_text = f"🚨 **New Creator Application** 🚨\n\n👤 User: {username}\n🆔 ID: {user_id}\n🔗 Profile: {final_link}"
     
     try:
         if update.message.photo:
             photo_file_id = update.message.photo[-1].file_id
-            caption = f"🚨 **New Creator Application (With Image)** 🚨\n\n👤 User: {username}\n🆔 ID: {user_id}\n📝 Caption: {update.message.caption or 'No caption'}"
+            # Photo ke sath bhi proper link bhejenge caption mein
+            caption = f"🚨 **New Creator Application (With Image)** 🚨\n\n👤 User: {username}\n🆔 ID: {user_id}\n🔗 Profile: {final_link}"
             await context.bot.send_photo(chat_id=ADMIN_ID, photo=photo_file_id, caption=caption, reply_markup=reply_markup)
         else:
             await context.bot.send_message(chat_id=ADMIN_ID, text=admin_text, reply_markup=reply_markup)
@@ -96,7 +110,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logging.error(f"Could not send approval to user: {e}")
         
     elif action == 'deny':
-        # Decline message updated to remove specific impressions requirement
         sorry_msg = "😔 Sorry! Your profile currently does not meet our minimum requirements. Keep grinding and feel free to apply again later!"
         try:
             await context.bot.send_message(chat_id=user_id, text=sorry_msg)
