@@ -49,34 +49,28 @@ async def handle_application(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     # === X (Twitter) Link Smart Generator ===
     if raw_text:
-        # Agar user ne text mein khud hi poora link daal diya hai
         if "x.com" in raw_text.lower() or "twitter.com" in raw_text.lower() or "http" in raw_text.lower():
             final_link = raw_text
         else:
-            # Agar sirf naam ya @naam bheja hai, toh usay pakar kar clean karein
             clean_username = raw_text.replace("@", "").strip().split()[0]
             final_link = f"https://x.com/{clean_username}"
     else:
         final_link = "[No Text / Only Media Attached]"
     # ========================================
 
-    # User ko confirmation message
     await update.message.reply_text("⏳ Your application has been submitted to the admin team. Please wait while we review your profile.")
 
-    # Admin ke liye buttons
     keyboard = [
         [InlineKeyboardButton("✅ Approve", callback_data=f'approve_{user_id}'),
          InlineKeyboardButton("❌ Decline", callback_data=f'deny_{user_id}')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Admin ko notification bhejna (Ab yahan clean link aayega)
     admin_text = f"🚨 **New Creator Application** 🚨\n\n👤 User: {username}\n🆔 ID: {user_id}\n🔗 Profile: {final_link}"
     
     try:
         if update.message.photo:
             photo_file_id = update.message.photo[-1].file_id
-            # Photo ke sath bhi proper link bhejenge caption mein
             caption = f"🚨 **New Creator Application (With Image)** 🚨\n\n👤 User: {username}\n🆔 ID: {user_id}\n🔗 Profile: {final_link}"
             await context.bot.send_photo(chat_id=ADMIN_ID, photo=photo_file_id, caption=caption, reply_markup=reply_markup)
         else:
@@ -102,10 +96,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         try:
             await context.bot.send_message(chat_id=user_id, text=success_msg, parse_mode='Markdown')
+            
+            # Agar pehle Decline kiya tha, toh uska text clean kar ke Approve lagayen
             if query.message.caption:
-                await query.edit_message_caption(caption=f"{query.message.caption}\n\n**Status:** ✅ Approved")
+                clean_caption = query.message.caption.replace("\n\n**Status:** ❌ Declined", "")
+                await query.edit_message_caption(caption=f"{clean_caption}\n\n**Status:** ✅ Approved")
             else:
-                await query.edit_message_text(text=f"{query.message.text}\n\n**Status:** ✅ Approved")
+                clean_text = query.message.text.replace("\n\n**Status:** ❌ Declined", "")
+                await query.edit_message_text(text=f"{clean_text}\n\n**Status:** ✅ Approved")
         except Exception as e:
             logging.error(f"Could not send approval to user: {e}")
         
@@ -113,10 +111,18 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sorry_msg = "😔 Sorry! Your profile currently does not meet our minimum requirements. Keep grinding and feel free to apply again later!"
         try:
             await context.bot.send_message(chat_id=user_id, text=sorry_msg)
+            
+            # === UNDO BUTTON LOGIC ===
+            undo_keyboard = [[InlineKeyboardButton("⏪ Wait, Approve Instead", callback_data=f'approve_{user_id}')]]
+            undo_markup = InlineKeyboardMarkup(undo_keyboard)
+
             if query.message.caption:
-                await query.edit_message_caption(caption=f"{query.message.caption}\n\n**Status:** ❌ Declined")
+                # Agar ek dafa decline lag chuka hai toh dobara na lagaye
+                if "**Status:** ❌ Declined" not in query.message.caption:
+                    await query.edit_message_caption(caption=f"{query.message.caption}\n\n**Status:** ❌ Declined", reply_markup=undo_markup)
             else:
-                await query.edit_message_text(text=f"{query.message.text}\n\n**Status:** ❌ Declined")
+                if "**Status:** ❌ Declined" not in query.message.text:
+                    await query.edit_message_text(text=f"{query.message.text}\n\n**Status:** ❌ Declined", reply_markup=undo_markup)
         except Exception as e:
             logging.error(f"Could not send decline to user: {e}")
 
