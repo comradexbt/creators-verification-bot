@@ -14,53 +14,40 @@ user_images = {}
 user_states = {}
 
 # ==========================================
-# --- RATE LIMIT SETTINGS (JSON FILE BASED) ---
+# --- SUPER STRICT RATE LIMITER ---
 # ==========================================
-MAX_REQUESTS = 5
-TIME_WINDOW_DAYS = 7
-TIME_WINDOW_SECONDS = TIME_WINDOW_DAYS * 24 * 60 * 60
 DATA_FILE = "rate_limits.json"
 
-def load_limits():
-    """File se purana data load karega"""
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r") as f:
-            try:
-                return json.load(f)
-            except:
-                return {}
-    return {}
-
-def save_limits(data):
-    """Data ko file mein save karega taake restart par delete na ho"""
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f)
-
-# Global dictionary
-user_request_history = load_limits()
-
 def is_user_rate_limited(user_id):
-    """Check karega ke limit cross hui hai ya nahi"""
-    user_id_str = str(user_id) # JSON mein keys hamesha string hoti hain
+    """File se hamesha fresh data read aur write karega"""
+    # 1. Hamesha file se fresh data load karein
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r") as f:
+                history = json.load(f)
+        except:
+            history = {}
+    else:
+        history = {}
+
+    user_id_str = str(user_id)
     current_time = time.time()
     
-    # Agar user naya hai
-    if user_id_str not in user_request_history:
-        user_request_history[user_id_str] = []
+    if user_id_str not in history:
+        history[user_id_str] = []
         
-    # Purane messages (jo 7 din se pehle ke hain) unhe list se nikal do
-    user_request_history[user_id_str] = [
-        t for t in user_request_history[user_id_str] 
-        if current_time - t < TIME_WINDOW_SECONDS
-    ]
+    # 2. 7 din se purane messages nikal dein
+    history[user_id_str] = [t for t in history[user_id_str] if current_time - t < (7 * 24 * 60 * 60)]
     
-    # Check limit (Agar 5 ya us se zyada ho gaye)
-    if len(user_request_history[user_id_str]) >= MAX_REQUESTS:
-        return True # Limit poori ho gayi!
+    # 3. Limit Check karein (Agar 5 ho gaye hain)
+    if len(history[user_id_str]) >= 5:
+        return True 
     
-    # Agar limit poori nahi hui, to naya time add kar do aur file mein save kar do
-    user_request_history[user_id_str].append(current_time)
-    save_limits(user_request_history)
+    # 4. Agar limit bachi hai, naya time add kar ke foren file save karein
+    history[user_id_str].append(current_time)
+    with open(DATA_FILE, "w") as f:
+        json.dump(history, f)
+        
     return False
 
 # ==========================================
@@ -106,12 +93,10 @@ def create_collage(image_list, text_watermark="Creators Club"):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     
-    # Admin Start Logic
     if user_id == TARGET_ADMIN_ID: 
         user_states[user_id] = "INSTANT_PFP"
         user_images[user_id] = []
         await update.message.reply_text("👋 Admin Bot Ready!", reply_markup=get_main_keyboard())
-    # Normal User Start Logic
     else:
         await update.message.reply_text(
             "👋 Welcome!\n\nSend your Twitter/X username/link to get verified.\n(Limit: 5 requests per 7 days)"
@@ -121,14 +106,16 @@ async def handle_buttons_and_logic(update: Update, context: ContextTypes.DEFAULT
     user_id = update.message.from_user.id
     text = update.message.text if update.message.text else "No text/Link"
 
-    # --- 1. NORMAL USER LOGIC (WITH RATE LIMITS) ---
+    # --- 1. NORMAL USER LOGIC ---
     if user_id != TARGET_ADMIN_ID:
         
+        # Limit Check
         if is_user_rate_limited(user_id):
             await update.message.reply_text("🚨 Your limit has been reached. Please try again after 7 days.")
-            return # Yahan code ruk jaye ga aur admin ko msg nahi jaye ga
+            return 
 
-        await update.message.reply_text("⏳ Application submitted. Please wait.")
+        # TRICK: Emoji change kar diya hai taake pata chale naya code chal raha hai
+        await update.message.reply_text("📝 Application submitted. Please wait.")
         
         username = update.message.from_user.username
         user_mention = f"@{username}" if username else f"User ID: {user_id}"
@@ -139,7 +126,7 @@ async def handle_buttons_and_logic(update: Update, context: ContextTypes.DEFAULT
         )
         return 
 
-    # --- 2. ADMIN LOGIC (NO LIMITS) ---
+    # --- 2. ADMIN LOGIC ---
     state = user_states.get(user_id, "INSTANT_PFP")
 
     if text == "🖼️ Start Collage Maker":
@@ -174,5 +161,5 @@ if __name__ == '__main__':
     bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_buttons_and_logic)) 
-    print("Bot is running...")
-    bot_app.run_polling()
+    print("Bot is starting...")
+    bot_app.run_polling(drop_pending_updates=True) # Ye purane pending messages ko clear kar de ga
