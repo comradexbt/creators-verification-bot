@@ -1,12 +1,13 @@
-import os, logging, re, math, asyncio, requests, time, json
+import os, logging, math, requests, time, json, re
 from io import BytesIO
 from flask import Flask
 from threading import Thread
-from PIL import Image, ImageDraw, ImageFont
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from PIL import Image
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
 logging.basicConfig(level=logging.INFO)
+# NAYA TOKEN YAHAN ADD HO GAYA HAI
 BOT_TOKEN = "TELEGRAM_BOT_TOKEN_PLACEHOLDER"
 TARGET_ADMIN_ID = 7323039280
 
@@ -14,53 +15,45 @@ user_images = {}
 user_states = {}
 
 # ==========================================
-# --- SUPER STRICT RATE LIMITER (MEMORY + FILE) ---
+# --- RATE LIMITER (FILE + MEMORY) ---
 # ==========================================
 DATA_FILE = "rate_limits.json"
 user_history = {}
 
-# 1. Start hotay hi purana data load karega
 if os.path.exists(DATA_FILE):
     try:
         with open(DATA_FILE, "r") as f:
             user_history = json.load(f)
-            print("Loaded previous history!")
     except:
-        print("Starting fresh history.")
+        pass
 
 def check_and_add_limit(user_id):
-    """Memory aur File dono mein limit update karega"""
     user_id_str = str(user_id)
     current_time = time.time()
     
     if user_id_str not in user_history:
         user_history[user_id_str] = []
         
-    # 7 din se purane messages nikal dein (7 days = 604800 seconds)
+    # 7 din ki limit (604800 seconds)
     user_history[user_id_str] = [t for t in user_history[user_id_str] if current_time - t < 604800]
     
-    # Current count check karein
     count = len(user_history[user_id_str])
-    
-    # Agar 5 ya zyada ho gaye toh Block kar do
     if count >= 5:
         return True, count
         
-    # Agar limit hai, toh naya message add karein
     user_history[user_id_str].append(current_time)
     new_count = len(user_history[user_id_str])
     
-    # File mein save karein taake restart par zaya na ho
     try:
         with open(DATA_FILE, "w") as f:
             json.dump(user_history, f)
-    except Exception as e:
-        print("File save error:", e)
+    except:
+        pass
         
     return False, new_count
 
 # ==========================================
-# --- DYNAMIC KEYBOARDS ---
+# --- KEYBOARDS ---
 # ==========================================
 def get_main_keyboard():
     return ReplyKeyboardMarkup([[KeyboardButton("🖼️ Start Collage Maker")]], resize_keyboard=True, persistent=True)
@@ -74,7 +67,7 @@ def get_collage_keyboard():
 # ==========================================
 # --- COLLAGE LOGIC ---
 # ==========================================
-def create_collage(image_list, text_watermark="Creators Club"):
+def create_collage(image_list):
     images = []
     for img_data in image_list:
         try:
@@ -97,6 +90,15 @@ def create_collage(image_list, text_watermark="Creators Club"):
     return output
 
 # ==========================================
+# --- COMMAND HIDER (Only shows /start) ---
+# ==========================================
+async def post_init(application):
+    # Sirf /start menu mein show hoga
+    await application.bot.set_my_commands([
+        BotCommand("start", "Start the verification process")
+    ])
+
+# ==========================================
 # --- HANDLERS ---
 # ==========================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -105,73 +107,107 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id == TARGET_ADMIN_ID: 
         user_states[user_id] = "INSTANT_PFP"
         user_images[user_id] = []
-        await update.message.reply_text("👋 Admin Bot Ready!", reply_markup=get_main_keyboard())
+        await update.message.reply_text("👑 *Admin Bot Ready!* Welcome back.", parse_mode='Markdown', reply_markup=get_main_keyboard())
     else:
-        await update.message.reply_text(
-            "👋 Welcome!\n\nSend your Twitter/X username/link to get verified.\n(Limit: 5 requests per 7 days)"
+        # ACHA WALA WELCOME MESSAGE
+        welcome_msg = (
+            "🌟 *Welcome to Web3 Creators Verification!* 🌟\n\n"
+            "Please send your Twitter/X username or profile link to get verified.\n\n"
+            "🛡️ _Note: To prevent spam, you can send a maximum of 5 requests per week._"
         )
+        await update.message.reply_text(welcome_msg, parse_mode='Markdown')
 
 async def handle_buttons_and_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     text = update.message.text if update.message.text else "No text/Link"
 
-    # --- 1. NORMAL USER LOGIC ---
-    if user_id != TARGET_ADMIN_ID:
+    # --- 1. ADMIN LOGIC ---
+    if user_id == TARGET_ADMIN_ID:
         
-        # Limit Check function call
+        # 📌 ADMIN REPLY TO USER FEATURE 📌
+        # Agar Admin kisi user ki request ka reply (Reply button daba kar) de raha hai
+        if update.message.reply_to_message and update.message.reply_to_message.text:
+            original_text = update.message.reply_to_message.text
+            # Message se user ID dhundhna
+            match = re.search(r"User ID: (\d+)", original_text)
+            
+            if match:
+                target_user_id = int(match.group(1))
+                reply_text = update.message.text
+                
+                # ACHA WALA APPROVAL/LINK MESSAGE (Jo user ko jayega)
+                approval_msg = (
+                    "🎉 *Congratulations!* 🎉\n\n"
+                    "We have reviewed your application and the Admin has sent a response:\n\n"
+                    f"🔗 {reply_text}\n\n"
+                    "Welcome to the community! 🚀"
+                )
+                try:
+                    await context.bot.send_message(chat_id=target_user_id, text=approval_msg, parse_mode='Markdown')
+                    await update.message.reply_text("✅ Link/Message sent to the user successfully!")
+                except Exception as e:
+                    await update.message.reply_text(f"❌ Failed to send message. User might have blocked the bot.")
+                return
+
+        # Regular Admin Buttons Logic
+        state = user_states.get(user_id, "INSTANT_PFP")
+        if text == "🖼️ Start Collage Maker":
+            user_states[user_id] = "COLLAGE_MAKER"
+            await update.message.reply_text("🎨 Mode: Collage. Link/Photo bhejein.", reply_markup=get_collage_keyboard())
+            return
+        elif text == "🔙 Back to PFP Mode":
+            user_states[user_id] = "INSTANT_PFP"
+            await update.message.reply_text("⚡ Mode: Instant PFP.", reply_markup=get_main_keyboard())
+            return
+        elif text == "🗑️ Cancel Collage":
+            user_images[user_id] = []
+            await update.message.reply_text("🗑️ List Saaf.")
+            return
+        elif text == "✅ Make Collage":
+            img = create_collage(user_images[user_id])
+            if img: await context.bot.send_photo(chat_id=user_id, photo=img)
+            user_images[user_id] = []
+            return
+            
+        return # Admin ka baaki code yahin ruk jayega
+
+    # --- 2. NORMAL USER LOGIC ---
+    if user_id != TARGET_ADMIN_ID:
         is_limited, count = check_and_add_limit(user_id)
         
         if is_limited:
-            await update.message.reply_text("🚨 Your limit has been reached. Please try again after 7 days.")
-            return # Yahan par code ruk jaye ga. Admin ko msg nahi jayega.
+            # ACHA WALA SORRY MESSAGE (Limit poori hone par)
+            sorry_msg = (
+                "🙏 *Apologies! Limit Reached* 🙏\n\n"
+                "You have used your maximum limit of 5 requests for this week. "
+                "Please try again after 7 days.\n\n"
+                "We appreciate your patience! ⏳"
+            )
+            await update.message.reply_text(sorry_msg, parse_mode='Markdown')
+            return 
 
-        # 🛑 TEST EMOJI + LIVE COUNTER: User ko numbers show honge
-        await update.message.reply_text(f"🛡️ Application submitted. ({count}/5) Please wait.")
+        # ACHA WALA SUBMIT MESSAGE
+        submit_msg = f"📝 *Application Submitted! ({count}/5)*\n\nPlease wait while our team reviews it. ⏳"
+        await update.message.reply_text(submit_msg, parse_mode='Markdown')
         
         username = update.message.from_user.username
-        user_mention = f"@{username}" if username else f"User ID: {user_id}"
+        user_mention = f"@{username}" if username else "No Username"
         
-        await context.bot.send_message(
-            chat_id=TARGET_ADMIN_ID, 
-            text=f"📩 Request ({count}/5) from {user_mention}:\n\n{text}"
+        # Admin ko msg jayega with User ID taake Admin reply kar sake
+        admin_alert = (
+            f"📩 *New Request ({count}/5)*\n"
+            f"👤 *Username:* {user_mention}\n"
+            f"🆔 *User ID:* {user_id}\n\n"
+            f"📄 *Data:* {text}"
         )
+        await context.bot.send_message(chat_id=TARGET_ADMIN_ID, text=admin_alert, parse_mode='Markdown')
         return 
 
-    # --- 2. ADMIN LOGIC ---
-    state = user_states.get(user_id, "INSTANT_PFP")
-
-    if text == "🖼️ Start Collage Maker":
-        user_states[user_id] = "COLLAGE_MAKER"
-        await update.message.reply_text("🎨 Mode: Collage. Link/Photo bhejein.", reply_markup=get_collage_keyboard())
-        return
-    elif text == "🔙 Back to PFP Mode":
-        user_states[user_id] = "INSTANT_PFP"
-        await update.message.reply_text("⚡ Mode: Instant PFP.", reply_markup=get_main_keyboard())
-        return
-    elif text == "🗑️ Cancel Collage":
-        user_images[user_id] = []
-        await update.message.reply_text("🗑️ List Saaf.")
-        return
-    elif text == "✅ Make Collage":
-        img = create_collage(user_images[user_id])
-        if img: await context.bot.send_photo(chat_id=user_id, photo=img)
-        user_images[user_id] = []
-        return
-
-    if state == "COLLAGE_MAKER":
-        if update.message.photo:
-            pass
-        elif "x.com" in text or "twitter.com" in text:
-            pass
-        return
-
-    if "x.com" in text or "twitter.com" in text:
-        pass
-
 if __name__ == '__main__':
-    bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
+    # post_init se auto command hide/show ho jayengi
+    bot_app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_buttons_and_logic)) 
     
-    print("🚀 NEW BOT SCRIPT STARTED! Old instances should be stopped.")
+    print("🚀 NAYA BOT START HO GAYA HAI!")
     bot_app.run_polling(drop_pending_updates=True)
