@@ -14,7 +14,6 @@ user_images = {}
 user_states = {}
 
 # --- RATE LIMIT SETTINGS ---
-# Dictionary to store user request timestamps
 user_request_history = {}
 MAX_REQUESTS = 5
 TIME_WINDOW_DAYS = 7
@@ -24,21 +23,20 @@ def is_user_rate_limited(user_id):
     """Checks if a user has exceeded 5 requests in the last 7 days."""
     current_time = time.time()
     
-    # Initialize user history if they are new
     if user_id not in user_request_history:
         user_request_history[user_id] = []
         
-    # Remove old requests that are past the 7-day window
+    # Remove timestamps older than 7 days
     user_request_history[user_id] = [
         t for t in user_request_history[user_id] 
         if current_time - t < TIME_WINDOW_SECONDS
     ]
     
-    # Check if they hit the limit
+    # Check if limit reached
     if len(user_request_history[user_id]) >= MAX_REQUESTS:
-        return True # Limited!
+        return True
     
-    # Add new request timestamp and allow
+    # Log this request and allow
     user_request_history[user_id].append(current_time)
     return False
 
@@ -79,15 +77,13 @@ def create_collage(image_list, text_watermark="Creators Club"):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     
-    # Admin Start Logic
     if user_id == TARGET_ADMIN_ID: 
         user_states[user_id] = "INSTANT_PFP"
         user_images[user_id] = []
         await update.message.reply_text("👋 Admin Bot Ready!", reply_markup=get_main_keyboard())
-    # Normal User Start Logic
     else:
         await update.message.reply_text(
-            "👋 Welcome! \n\nYou can send up to 5 profile links or messages every 7 days."
+            "👋 Welcome!\n\nAap 7 dinon mein sirf 5 requests bhej sakte hain."
         )
 
 async def handle_buttons_and_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -98,15 +94,15 @@ async def handle_buttons_and_logic(update: Update, context: ContextTypes.DEFAULT
     # 1. NORMAL USER LOGIC (WITH RATE LIMITS)
     # ==========================================
     if user_id != TARGET_ADMIN_ID:
-        # Check limit BEFORE doing anything
         if is_user_rate_limited(user_id):
-            await update.message.reply_text("🚨 Your limit has been reached. Please try again after 7 days.")
-            return # Stops the code here. The bot won't forward anything to you.
+            await update.message.reply_text(
+                "🚨 Aap ki 5 requests ki limit poori ho gayi hai.\n"
+                "Meherbani karke 7 din baad dobara try karein."
+            )
+            return
 
-        # If they haven't reached the limit, the code continues:
-        await update.message.reply_text("✅ Your request has been sent to the Admin.")
+        await update.message.reply_text("✅ Aap ki request Admin ko bhej di gayi hai.")
         
-        # Forwarding the message to you (the admin)
         await context.bot.send_message(
             chat_id=TARGET_ADMIN_ID, 
             text=f"📩 New Request from User {user_id}:\n\n{text}"
@@ -118,9 +114,9 @@ async def handle_buttons_and_logic(update: Update, context: ContextTypes.DEFAULT
     # ==========================================
     state = user_states.get(user_id, "INSTANT_PFP")
 
-    # Handle Admin Buttons
     if text == "🖼️ Start Collage Maker":
         user_states[user_id] = "COLLAGE_MAKER"
+        user_images[user_id] = []
         await update.message.reply_text("🎨 Mode: Collage. Link/Photo bhejein.", reply_markup=get_collage_keyboard())
         return
     elif text == "🔙 Back to PFP Mode":
@@ -132,28 +128,23 @@ async def handle_buttons_and_logic(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text("🗑️ List Saaf.")
         return
     elif text == "✅ Make Collage":
-        img = create_collage(user_images[user_id])
-        if img: await context.bot.send_photo(chat_id=user_id, photo=img)
+        img = create_collage(user_images.get(user_id, []))
+        if img:
+            await context.bot.send_photo(chat_id=user_id, photo=img)
         user_images[user_id] = []
         return
 
-    # Handle Admin Collage Data Save
     if state == "COLLAGE_MAKER":
         if update.message.photo:
-            # (Photo download logic)
             pass
         elif "x.com" in text or "twitter.com" in text:
-            # (Link add logic)
             pass
         return
 
-    # Default PFP Mode
     if "x.com" in text or "twitter.com" in text:
-        # (Direct PFP logic)
         pass
 
 if __name__ == '__main__':
-    # ... Flask app logic (if you are using keep_alive) ...
     bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_buttons_and_logic)) 
