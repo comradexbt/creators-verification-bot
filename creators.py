@@ -1,25 +1,31 @@
-import os, logging, re, math, asyncio, requests, json, time
-from io import BytesIO
-from flask import Flask
-from threading import Thread
-from PIL import Image, ImageDraw, ImageFont
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+import os, json, time
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
-logging.basicConfig(level=logging.INFO)
+# Your Bot Token
 BOT_TOKEN = "TELEGRAM_BOT_TOKEN_PLACEHOLDER"
-TARGET_ADMIN_ID = 7323039280
 
-user_images = {}
-user_states = {}
+# Your Admin ID
+ADMIN_ID = 7323039280  
 
-# --- RATE LIMIT SETTINGS ---
+# ⚠️ Discord Server Link
+GROUP_LINK = "https://discord.gg/tYvydayNZ"
+
+# Files to save data
+APPROVED_FILE = "approved_users.txt"
+DECLINED_FILE = "declined_users.txt"
 RATE_LIMIT_FILE = "rate_limits.json"
+
+# --- SPAM PROTECTION (RATE LIMITING) ---
 MAX_REQUESTS = 5
 TIME_WINDOW = 7 * 24 * 60 * 60  # 7 days in seconds
 
 def check_rate_limit(user_id):
     """Checks if a user has exceeded their 5 requests per 7 days limit."""
+    # Admin is never rate-limited
+    if user_id == ADMIN_ID:
+        return True
+
     try:
         if os.path.exists(RATE_LIMIT_FILE):
             with open(RATE_LIMIT_FILE, "r") as f:
@@ -39,11 +45,11 @@ def check_rate_limit(user_id):
     recent_history = [ts for ts in history if current_time - ts < TIME_WINDOW]
     
     if len(recent_history) >= MAX_REQUESTS:
-        # Save cleaned history anyway to keep file size small
+        # Save cleaned history to keep file size small
         data[user_id_str] = recent_history
         with open(RATE_LIMIT_FILE, "w") as f:
             json.dump(data, f)
-        return False # Rate limited (Blocked)
+        return False # ❌ Blocked (Limit Reached)
         
     # If not rate limited, add new request timestamp
     recent_history.append(current_time)
@@ -52,102 +58,146 @@ def check_rate_limit(user_id):
     with open(RATE_LIMIT_FILE, "w") as f:
         json.dump(data, f)
         
-    return True # Allowed
+    return True # ✅ Allowed
 
-# --- DYNAMIC KEYBOARDS ---
-def get_main_keyboard():
-    return ReplyKeyboardMarkup([[KeyboardButton("🖼️ Start Collage Maker")]], resize_keyboard=True, persistent=True)
+def save_user_to_file(file_name, username, user_id, x_link):
+    with open(file_name, "a", encoding="utf-8") as f:
+        f.write(f"Telegram: {username} | ID: {user_id} | X: {x_link}\n")
 
-def get_collage_keyboard():
-    return ReplyKeyboardMarkup([
-        ["✅ Make Collage", "🗑️ Cancel Collage"],
-        ["🔙 Back to PFP Mode"]
-    ], resize_keyboard=True, persistent=True)
-
-# --- COLLAGE LOGIC ---
-def create_collage(image_list, text_watermark="Creators Club"):
-    # (Pehle wala collage code waisa hi hai)
-    images = []
-    for img_data in image_list:
-        try:
-            if isinstance(img_data, str): 
-                response = requests.get(img_data, timeout=5)
-                img = Image.open(BytesIO(response.content)).convert("RGBA")
-            else: 
-                img = Image.open(BytesIO(img_data)).convert("RGBA")
-            img = img.resize((150, 150))
-            images.append(img)
-        except: continue
-    if not images: return None
-    cols = math.ceil(math.sqrt(len(images)))
-    rows = math.ceil(len(images) / cols)
-    collage = Image.new('RGBA', (cols * 150, rows * 150), (0, 0, 0, 255))
-    for idx, img in enumerate(images): collage.paste(img, ((idx % cols) * 150, (idx // cols) * 150))
-    output = BytesIO()
-    collage.convert("RGB").save(output, format='JPEG')
-    output.seek(0)
-    return output
-
-# --- HANDLERS ---
+# 1. When the user starts the bot
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    welcome_msg = (
+        "👋 Welcome to the <b>Web3 Creators Pakistan</b> Community!\n\n"
+        "🚀 To get verified, please send your <b>X (Twitter) Profile Link</b> OR just your <b>@username</b>."
+    )
+    await update.message.reply_text(welcome_msg, parse_mode='HTML')
+
+# 2. When the user sends their link/username
+async def handle_application(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    if user_id != TARGET_ADMIN_ID: return # Remove this line if you want public access
+    user_text = update.message.text.strip()
     
-    user_states[user_id] = "INSTANT_PFP"
-    user_images[user_id] = []
-    await update.message.reply_text("👋 Bot Ready!", reply_markup=get_main_keyboard())
-
-async def handle_buttons_and_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    if user_id != TARGET_ADMIN_ID: return # Remove this line if you want public access
-    
-    text = update.message.text
-    state = user_states.get(user_id, "INSTANT_PFP")
-
-    # Navigation buttons (In par rate limit nahi lagegi)
-    if text in ["🖼️ Start Collage Maker", "🔙 Back to PFP Mode", "🗑️ Cancel Collage", "✅ Make Collage"]:
-        if text == "🖼️ Start Collage Maker":
-            user_states[user_id] = "COLLAGE_MAKER"
-            await update.message.reply_text("🎨 Mode: Collage. Link/Photo bhejein.", reply_markup=get_collage_keyboard())
-        elif text == "🔙 Back to PFP Mode":
-            user_states[user_id] = "INSTANT_PFP"
-            await update.message.reply_text("⚡ Mode: Instant PFP.", reply_markup=get_main_keyboard())
-        elif text == "🗑️ Cancel Collage":
-            user_images[user_id] = []
-            await update.message.reply_text("🗑️ List Saaf.")
-        elif text == "✅ Make Collage":
-            if user_images.get(user_id):
-                img = create_collage(user_images[user_id])
-                if img: await context.bot.send_photo(chat_id=user_id, photo=img)
-                user_images[user_id] = []
-            else:
-                await update.message.reply_text("⚠️ Pehle kuch tasveerein bhejein.")
-        return
-
-    # --- 🚦 RATE LIMIT CHECK APPLIED HERE ---
-    # Sirf us waqt count hoga jab user waqai koi link ya photo bhejega
+    # 🚦 CHECK RATE LIMIT FIRST (SPAM BLOCKER)
     if not check_rate_limit(user_id):
-        await update.message.reply_text("⏳ Limit Reached!\n\nAap 7 dino mein sirf 5 requests bhej sakte hain. Kuch din baad dobara try karein.")
+        # ⚠️ Spammer message (Bot won't forward anything to you)
+        await update.message.reply_text("🚫 You have reached your submission limit. Please try again after 7 days.")
         return
 
-    # 2. Collage Mode mein Data Save karna
-    if state == "COLLAGE_MAKER":
-        if update.message.photo:
-            # (Photo download logic)
-            await update.message.reply_text("✅ Photo Collage ke liye save ho gayi.")
-        elif "x.com" in text or "twitter.com" in text:
-            # (Link add logic)
-            await update.message.reply_text("✅ Link Collage ke liye save ho gaya.")
-        return
+    # If limit is not reached, process normally:
+    user = update.message.from_user
+    tg_username = f"@{user.username}" if user.username else user.first_name
 
-    # 3. Default PFP Mode
-    if "x.com" in text or "twitter.com" in text:
-        # (Direct PFP logic)
-        await update.message.reply_text("✅ Instant PFP processing...")
+    x_username = ""
+    if "x.com/" in user_text:
+        x_username = user_text.split("x.com/")[-1].split("?")[0].strip("/")
+    elif "twitter.com/" in user_text:
+        x_username = user_text.split("twitter.com/")[-1].split("?")[0].strip("/")
+    elif user_text.startswith("@"):
+        x_username = user_text[1:]
+    else:
+        x_username = user_text.strip()
+
+    x_link = f"https://x.com/{x_username}"
+    x_photo_url = f"https://unavatar.io/x/{x_username}"
+
+    # Assure the user
+    await update.message.reply_text("⏳ Your profile has been submitted! Please wait while our admin team reviews it.")
+
+    # Approve / Decline buttons for the Admin
+    keyboard = [
+        [InlineKeyboardButton("✅ Approve", callback_data=f'approve_{user_id}_{x_username}'),
+         InlineKeyboardButton("❌ Decline", callback_data=f'deny_{user_id}_{x_username}')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    admin_text = (
+        "🚨 <b>NEW CREATOR APPLICATION</b> 🚨\n\n"
+        f"👤 <b>Telegram User:</b> {tg_username}\n"
+        f"🆔 <b>User ID:</b> <code>{user_id}</code>\n"
+        f"🌐 <b>X Profile:</b> <a href='{x_link}'>{x_link}</a>\n\n"
+        "⚡ <i>Please review the profile and take action below!</i>"
+    )
+    
+    try:
+        await context.bot.send_photo(
+            chat_id=ADMIN_ID, 
+            photo=x_photo_url, 
+            caption=admin_text, 
+            reply_markup=reply_markup, 
+            parse_mode='HTML'
+        )
+    except Exception as e:
+        print(f"Photo fetch error: {e}")
+        await context.bot.send_message(
+            chat_id=ADMIN_ID, 
+            text=admin_text, 
+            reply_markup=reply_markup, 
+            parse_mode='HTML', 
+            disable_web_page_preview=True
+        )
+
+# 3. When the Admin clicks Approve or Decline
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer() 
+    data = query.data
+
+    action, user_id, x_username = data.split('_')
+    user_id = int(user_id)
+    x_link = f"https://x.com/{x_username}"
+    tg_username = f"@{query.message.chat.username}" if query.message.chat.username else "User"
+
+    if action == 'approve':
+        success_msg = (
+            "🎉 <b>Congratulations! Your profile has been approved.</b>\n\n"
+            "👋 Welcome to the elite circle of creators!\n\n"
+            "🚀 Here is your exclusive invite link to join our Discord community:\n"
+            f"👉 <b><a href='{GROUP_LINK}'>Web3 Creators Discord Server</a></b>"
+        )
+        await context.bot.send_message(chat_id=user_id, text=success_msg, parse_mode='HTML', disable_web_page_preview=True)
+        
+        save_user_to_file(APPROVED_FILE, tg_username, user_id, x_link)
+        
+        if query.message.caption:
+            await query.edit_message_caption(caption=f"{query.message.caption}\n\n**Status:** ✅ APPROVED & SAVED", parse_mode='Markdown')
+        else:
+            await query.edit_message_text(text=f"{query.message.text}\n\n**Status:** ✅ APPROVED & SAVED", parse_mode='Markdown')
+        
+    elif action == 'deny':
+        sorry_msg = "😔 Sorry! Your profile currently does not meet our minimum requirements. Keep grinding and feel free to apply again later!"
+        await context.bot.send_message(chat_id=user_id, text=sorry_msg)
+        
+        save_user_to_file(DECLINED_FILE, tg_username, user_id, x_link)
+        
+        if query.message.caption:
+            await query.edit_message_caption(caption=f"{query.message.caption}\n\n**Status:** ❌ DECLINED & SAVED", parse_mode='Markdown')
+        else:
+            await query.edit_message_text(text=f"{query.message.text}\n\n**Status:** ❌ DECLINED & SAVED", parse_mode='Markdown')
+
+# Admin Commands
+async def send_approved_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.chat_id != ADMIN_ID: return
+    if os.path.exists(APPROVED_FILE) and os.path.getsize(APPROVED_FILE) > 0:
+        await context.bot.send_document(chat_id=ADMIN_ID, document=open(APPROVED_FILE, 'rb'), filename="Approved_Creators.txt", caption="📋 Approved Users.")
+    else:
+        await update.message.reply_text("📭 Approved list is empty.")
+
+async def send_declined_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.chat_id != ADMIN_ID: return
+    if os.path.exists(DECLINED_FILE) and os.path.getsize(DECLINED_FILE) > 0:
+        await context.bot.send_document(chat_id=ADMIN_ID, document=open(DECLINED_FILE, 'rb'), filename="Declined_Users.txt", caption="📋 Declined Users.")
+    else:
+        await update.message.reply_text("📭 Declined list is empty.")
 
 if __name__ == '__main__':
-    # ... Flask ...
-    bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
-    bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_buttons_and_logic)) 
-    bot_app.run_polling()
+    print("Bot is starting...")
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("approvedlist", send_approved_list))
+    app.add_handler(CommandHandler("declinedlist", send_declined_list))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_application))
+    app.add_handler(CallbackQueryHandler(button_callback))
+
+    print("Bot is running! Check it on Telegram.")
+    app.run_polling(poll_interval=3.0)
