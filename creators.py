@@ -14,7 +14,6 @@ user_images = {}
 user_states = {}
 
 # --- RATE LIMIT SETTINGS ---
-# Dictionary to store user request timestamps
 user_request_history = {}
 MAX_REQUESTS = 5
 TIME_WINDOW_DAYS = 7
@@ -87,38 +86,49 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Normal User Start Logic
     else:
         await update.message.reply_text(
-            "👋 Welcome! \n\nYou can send up to 5 profile links or messages every 7 days."
+            "👋 Welcome!\n\nSend your Twitter/X username/link to get verified.\n(Limit: 5 requests per 7 days)"
         )
 
 async def handle_buttons_and_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    text = update.message.text
+    
+    # Agar message mein text nahi hai (jaise sirf photo ho without caption), toh avoid error
+    text = update.message.text if update.message.text else "No text/Link"
 
     # ==========================================
     # 1. NORMAL USER LOGIC (WITH RATE LIMITS)
     # ==========================================
     if user_id != TARGET_ADMIN_ID:
-        # Check limit BEFORE doing anything
-        if is_user_rate_limited(user_id):
-            await update.message.reply_text("🚨 Your limit has been reached. Please try again after 7 days.")
-            return # Stops the code here. The bot won't forward anything to you.
-
-        # If they haven't reached the limit, the code continues:
-        await update.message.reply_text("✅ Your request has been sent to the Admin.")
         
-        # Forwarding the message to you (the admin)
+        # SAB SE PEHLE LIMIT CHECK KAREIN:
+        if is_user_rate_limited(user_id):
+            # Agar 5 dafa limit poori ho gayi hai, toh ye message jaye:
+            await update.message.reply_text("🚨 Your limit has been reached. Please try again after 7 days.")
+            
+            # RETURN bohat zaroori hai! Ye code ko yahin rok dega aur admin ko request nahi jayegi.
+            return 
+
+        # Agar limit bachi hui hai, toh ye chale ga:
+        await update.message.reply_text("⏳ Application submitted. Please wait.")
+        
+        # Admin ko message bhejne ki logic:
+        username = update.message.from_user.username
+        user_mention = f"@{username}" if username else f"User ID: {user_id}"
+        
         await context.bot.send_message(
             chat_id=TARGET_ADMIN_ID, 
-            text=f"📩 New Request from User {user_id}:\n\n{text}"
+            text=f"📩 New Request from {user_mention}:\n\n{text}"
         )
-        return
+        
+        # Normal user ka kaam yahan khatam, isliye return:
+        return 
 
     # ==========================================
-    # 2. ADMIN LOGIC (NO LIMITS)
+    # 2. ADMIN LOGIC (NO LIMITS - Sirf aapke liye)
     # ==========================================
     state = user_states.get(user_id, "INSTANT_PFP")
 
-    # Handle Admin Buttons
+    # Buttons Handle karna
     if text == "🖼️ Start Collage Maker":
         user_states[user_id] = "COLLAGE_MAKER"
         await update.message.reply_text("🎨 Mode: Collage. Link/Photo bhejein.", reply_markup=get_collage_keyboard())
@@ -137,24 +147,27 @@ async def handle_buttons_and_logic(update: Update, context: ContextTypes.DEFAULT
         user_images[user_id] = []
         return
 
-    # Handle Admin Collage Data Save
+    # Collage Mode Data Save
     if state == "COLLAGE_MAKER":
         if update.message.photo:
-            # (Photo download logic)
+            # (Yahan aapki photo download logic ayegi)
             pass
         elif "x.com" in text or "twitter.com" in text:
-            # (Link add logic)
+            # (Yahan aapki link add logic ayegi)
             pass
         return
 
     # Default PFP Mode
     if "x.com" in text or "twitter.com" in text:
-        # (Direct PFP logic)
+        # (Yahan aapki direct PFP logic ayegi)
         pass
 
 if __name__ == '__main__':
-    # ... Flask app logic (if you are using keep_alive) ...
+    # Flask code agar host karne ke liye chahiye to yahan add kar lein
     bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
+    
     bot_app.add_handler(CommandHandler("start", start))
+    # filters.TEXT aur filters.PHOTO dono ko allow karega
     bot_app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_buttons_and_logic)) 
+    
     bot_app.run_polling()
