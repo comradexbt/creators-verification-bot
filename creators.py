@@ -1,93 +1,181 @@
-import os
-import logging
-import re
-import asyncio
+import os, logging, time, json, re
 from flask import Flask
 from threading import Thread
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
-# Logging setup
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-
-# Aap ke bot ki details
+logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = "TELEGRAM_BOT_TOKEN_PLACEHOLDER"
-TARGET_ADMIN_ID = 7323039280  
+TARGET_ADMIN_ID = 7323039280
 
-# ===== DUMMY WEB SERVER =====
-flask_app = Flask(__name__)
+# ==========================================
+# --- RATE LIMITER (JSON) ---
+# ==========================================
+DATA_FILE = "rate_limits.json"
+user_history = {}
 
-@flask_app.route('/')
-def home():
-    return "X PFP Scraper Bot is Alive and Running!"
+if os.path.exists(DATA_FILE):
+    try:
+        with open(DATA_FILE, "r") as f: user_history = json.load(f)
+    except: pass
 
-def run_flask():
-    port = int(os.environ.get('PORT', 8080))
-    flask_app.run(host='0.0.0.0', port=port)
+def check_and_add_limit(user_id):
+    user_id_str = str(user_id)
+    current_time = time.time()
+    if user_id_str not in user_history: user_history[user_id_str] = []
+    user_history[user_id_str] = [t for t in user_history[user_id_str] if current_time - t < 604800]
+    count = len(user_history[user_id_str])
+    if count >= 5: return True, count
+    user_history[user_id_str].append(current_time)
+    with open(DATA_FILE, "w") as f: json.dump(user_history, f)
+    return False, len(user_history[user_id_str])
 
-def keep_alive():
-    t = Thread(target=run_flask)
-    t.start()
-# ============================
+# ==========================================
+# --- BOT HANDLERS ---
+# ==========================================
+async def post_init(application):
+    await application.bot.set_my_commands([BotCommand("start", "Start the verification process")])
 
-# 1. Start Command
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != TARGET_ADMIN_ID: return
-    await update.message.reply_text("👋 Send X profile link to download PFP.")
+# --- INLINE BUTTONS CLICK (Approve/Decline) ---
+async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    status = "✅ Approved" if query.data == "approve" else "❌ Declined"
+    
+    # Check karein ke message photo hai ya text
+    is_photo = bool(query.message.photo)
+    current_text = query.message.caption if is_photo else query.message.text
+    
+    if not current_text: return
+    new_text = current_text.replace("⏳ Pending", status)
+    
+    try:
+        # Buttons hata kar status update karega
+        if is_photo:
+            await query.edit_message_caption(caption=new_text)
+        else:
+            await query.edit_message_text(text=new_text)
+    except: pass
+    
+    # User ko notification bhejna
+    match = re.search(r"ID: (\d+)", current_text)
+    if match:
+        user_id = match.group(1)
+        if query.data == "approve":
+            msg = "🎉 *Congratulations!* Your application has been Approved. Please wait for the Admin to send you the link."
+        else:
+            msg = "❌ Your application was Declined."
+            
+        try: await context.bot.send_message(chat_id=user_id, text=msg, parse_mode='Markdown')
+        except: pass
 
-# 2. Bulk Processing & Forwarded Message Logic
-async def process_pfp_requests(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != TARGET_ADMIN_ID: return
+# --- MAIN MESSAGE HANDLER ---
+async def handle_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    text = update.message.text if update.message.text else "No text"
 
-    # text ya caption dono check karega
-    raw_text = update.message.text or update.message.caption
-    if not raw_text: return
-
-    # SMART REGEX
-    usernames_found = re.findall(r'https?://(?:www\.)?(?:x|twitter)\.com/([a-zA-Z0-9_]+)', raw_text)
-    unique_usernames = list(set(usernames_found))
-
-    if not unique_usernames: 
+    # ------------------------------------
+    # 1. ADMIN LOGIC (Reply to send link)
+    # ------------------------------------
+    if user_id == TARGET_ADMIN_ID:
+        if update.message.reply_to_message:
+            replied_msg = update.message.reply_to_message
+            # Photo aur Text dono ko handle karega
+            original_text = replied_msg.caption if replied_msg.photo else replied_msg.text
+            
+            if original_text:
+                match = re.search(r"ID: (\d+)", original_text)
+                if match:
+                    target_id = int(match.group(1))
+                    try:
+                        await context.bot.send_message(chat_id=target_id, text=f"🔗 *Here is your Link:*\n\n{text}", parse_mode='Markdown')
+                        await update.message.reply_text("✅ Link sent to the user successfully!")
+                    except: await update.message.reply_text("❌ Failed to send link.")
         return
 
-    status_msg = await update.message.reply_text(f"⏳ Extracting {len(unique_usernames)} profile(s) in High Quality...")
+    # ------------------------------------
+    # 2. NORMAL USER LOGIC
+    # ------------------------------------
+    is_limited, count = check_and_add_limit(user_id)
+    if is_limited:
+        await update.message.reply_text("🙏 *Apologies! Limit Reached.*\n\nYou have used your 5 requests. Try again in 7 days.", parse_mode='Markdown')
+        return
 
-    success_count = 0
-    fail_count = 0
-
-    for x_username in unique_usernames:
-        avatar_url = f"https://unavatar.io/x/{x_username}?size=1000"
-        caption_text = f"👤 **Username:** @{x_username}\n🔗 **Link:** https://x.com/{x_username}"
-
-        try:
-            # 1. Pehle sirf photo bhejain (taake save karne mein aasani ho)
-            await context.bot.send_photo(chat_id=TARGET_ADMIN_ID, photo=avatar_url)
-            
-            # 2. Phir details ka alag message bhejain
-            await context.bot.send_message(chat_id=TARGET_ADMIN_ID, text=caption_text)
-            
-            success_count += 1
-        except Exception as e:
-            logging.warning(f"Failed to fetch for {x_username}: {e}")
-            try:
-                await context.bot.send_message(chat_id=TARGET_ADMIN_ID, text=f"❌ **Failed to fetch PFP for:** @{x_username}")
-            except: pass
-            fail_count += 1
-
-        # Telegram rate limit se bachne ke liye 1 second ka pause
-        await asyncio.sleep(1)
-
-    if len(unique_usernames) > 1:
-        await status_msg.reply_text(f"✅ **Done!**\n\n📥 Success: {success_count}\n❌ Failed: {fail_count}")
+    await update.message.reply_text(f"📝 *Application Submitted! ({count}/5)*\n\nPlease wait for the Admin to review.", parse_mode='Markdown')
+    
+    # ------------------------------------
+    # 3. PFP ATTACHMENT & ADMIN NOTIFICATION
+    # ------------------------------------
+    profile_link = text
+    clean_user = ""
+    
+    # Link se username nikalna
+    if "x.com" in text or "twitter.com" in text:
+        match = re.search(r"(?:x\.com|twitter\.com)/([^/?]+)", text)
+        if match: clean_user = match.group(1)
     else:
-        await status_msg.delete()
+        clean_user = text.replace("@", "").strip().split()[0]
+        profile_link = f"https://x.com/{clean_user}"
+
+    username = update.message.from_user.username
+    user_mention = f"@{username}" if username else "No Username"
+
+    keyboard = [[InlineKeyboardButton("✅ Approve", callback_data="approve"), 
+                 InlineKeyboardButton("❌ Decline", callback_data="decline")]]
+    
+    admin_alert = (
+        f"🚨 New Creator Application 🚨\n\n"
+        f"👤 User: {user_mention}\n"
+        f"🆔 ID: {user_id}\n"
+        f"🔗 Profile: {profile_link}\n\n"
+        f"Status: ⏳ Pending"
+    )
+    
+    # API ke zariye direct PFP download kar ke attach karna
+    try:
+        if clean_user:
+            pfp_url = f"https://unavatar.io/twitter/{clean_user}"
+            await context.bot.send_photo(
+                chat_id=TARGET_ADMIN_ID,
+                photo=pfp_url,
+                caption=admin_alert,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        else:
+            raise Exception("No Username found")
+    except Exception as e:
+        # Agar photo fetch na ho sakay, toh simple text bhej dega
+        await context.bot.send_message(
+            chat_id=TARGET_ADMIN_ID, 
+            text=admin_alert, 
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            disable_web_page_preview=True
+        )
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id == TARGET_ADMIN_ID:
+        await update.message.reply_text("👑 Admin Bot Ready!")
+    else:
+        welcome_msg = (
+            "🌟 *Welcome to Web3 Creators Verification!* 🌟\n\n"
+            "Please send your **Twitter/X Username** or **Profile Link** to get verified.\n"
+            "_(Example: @comradexbt OR https://x.com/comradexbt)_"
+        )
+        await update.message.reply_text(welcome_msg, parse_mode='Markdown')
+
+# ==========================================
+# --- FLASK SERVER (Render 24/7) ---
+# ==========================================
+app = Flask(__name__)
+@app.route('/')
+def home(): return "Bot is running!"
+def run_server(): app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
 
 if __name__ == '__main__':
-    keep_alive()
-    
-    bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
+    Thread(target=run_server).start()
+    bot_app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
     bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & ~filters.COMMAND, process_pfp_requests))
-    
-    print("Scraper Bot is running smoothly...")
-    bot_app.run_polling()
+    bot_app.add_handler(CallbackQueryHandler(button_click))
+    bot_app.add_handler(MessageHandler(filters.TEXT, handle_request))
+    bot_app.run_polling(drop_pending_updates=True)
