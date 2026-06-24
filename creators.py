@@ -14,41 +14,50 @@ user_images = {}
 user_states = {}
 
 # ==========================================
-# --- SUPER STRICT RATE LIMITER ---
+# --- SUPER STRICT RATE LIMITER (MEMORY + FILE) ---
 # ==========================================
 DATA_FILE = "rate_limits.json"
+user_history = {}
 
-def is_user_rate_limited(user_id):
-    """File se hamesha fresh data read aur write karega"""
-    # 1. Hamesha file se fresh data load karein
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r") as f:
-                history = json.load(f)
-        except:
-            history = {}
-    else:
-        history = {}
+# 1. Start hotay hi purana data load karega
+if os.path.exists(DATA_FILE):
+    try:
+        with open(DATA_FILE, "r") as f:
+            user_history = json.load(f)
+            print("Loaded previous history!")
+    except:
+        print("Starting fresh history.")
 
+def check_and_add_limit(user_id):
+    """Memory aur File dono mein limit update karega"""
     user_id_str = str(user_id)
     current_time = time.time()
     
-    if user_id_str not in history:
-        history[user_id_str] = []
+    if user_id_str not in user_history:
+        user_history[user_id_str] = []
         
-    # 2. 7 din se purane messages nikal dein
-    history[user_id_str] = [t for t in history[user_id_str] if current_time - t < (7 * 24 * 60 * 60)]
+    # 7 din se purane messages nikal dein (7 days = 604800 seconds)
+    user_history[user_id_str] = [t for t in user_history[user_id_str] if current_time - t < 604800]
     
-    # 3. Limit Check karein (Agar 5 ho gaye hain)
-    if len(history[user_id_str]) >= 5:
-        return True 
+    # Current count check karein
+    count = len(user_history[user_id_str])
     
-    # 4. Agar limit bachi hai, naya time add kar ke foren file save karein
-    history[user_id_str].append(current_time)
-    with open(DATA_FILE, "w") as f:
-        json.dump(history, f)
+    # Agar 5 ya zyada ho gaye toh Block kar do
+    if count >= 5:
+        return True, count
         
-    return False
+    # Agar limit hai, toh naya message add karein
+    user_history[user_id_str].append(current_time)
+    new_count = len(user_history[user_id_str])
+    
+    # File mein save karein taake restart par zaya na ho
+    try:
+        with open(DATA_FILE, "w") as f:
+            json.dump(user_history, f)
+    except Exception as e:
+        print("File save error:", e)
+        
+    return False, new_count
 
 # ==========================================
 # --- DYNAMIC KEYBOARDS ---
@@ -109,20 +118,22 @@ async def handle_buttons_and_logic(update: Update, context: ContextTypes.DEFAULT
     # --- 1. NORMAL USER LOGIC ---
     if user_id != TARGET_ADMIN_ID:
         
-        # Limit Check
-        if is_user_rate_limited(user_id):
+        # Limit Check function call
+        is_limited, count = check_and_add_limit(user_id)
+        
+        if is_limited:
             await update.message.reply_text("🚨 Your limit has been reached. Please try again after 7 days.")
-            return 
+            return # Yahan par code ruk jaye ga. Admin ko msg nahi jayega.
 
-        # TRICK: Emoji change kar diya hai taake pata chale naya code chal raha hai
-        await update.message.reply_text("📝 Application submitted. Please wait.")
+        # 🛑 TEST EMOJI + LIVE COUNTER: User ko numbers show honge
+        await update.message.reply_text(f"🛡️ Application submitted. ({count}/5) Please wait.")
         
         username = update.message.from_user.username
         user_mention = f"@{username}" if username else f"User ID: {user_id}"
         
         await context.bot.send_message(
             chat_id=TARGET_ADMIN_ID, 
-            text=f"📩 New Request from {user_mention}:\n\n{text}"
+            text=f"📩 Request ({count}/5) from {user_mention}:\n\n{text}"
         )
         return 
 
@@ -161,5 +172,6 @@ if __name__ == '__main__':
     bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_buttons_and_logic)) 
-    print("Bot is starting...")
-    bot_app.run_polling(drop_pending_updates=True) # Ye purane pending messages ko clear kar de ga
+    
+    print("🚀 NEW BOT SCRIPT STARTED! Old instances should be stopped.")
+    bot_app.run_polling(drop_pending_updates=True)
