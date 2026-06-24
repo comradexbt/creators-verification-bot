@@ -1,32 +1,25 @@
-import os, logging, math, requests, time, json, re
+import os, logging, time, json, re
 from flask import Flask
 from threading import Thread
-from io import BytesIO
-from PIL import Image
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
 logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = "TELEGRAM_BOT_TOKEN_PLACEHOLDER"
 TARGET_ADMIN_ID = 7323039280
 
-# ==========================================
-# --- RATE LIMITER (JSON FILE) ---
-# ==========================================
 DATA_FILE = "rate_limits.json"
 user_history = {}
 
 if os.path.exists(DATA_FILE):
     try:
-        with open(DATA_FILE, "r") as f:
-            user_history = json.load(f)
+        with open(DATA_FILE, "r") as f: user_history = json.load(f)
     except: pass
 
 def check_and_add_limit(user_id):
     user_id_str = str(user_id)
     current_time = time.time()
     if user_id_str not in user_history: user_history[user_id_str] = []
-    # 7 din ki limit
     user_history[user_id_str] = [t for t in user_history[user_id_str] if current_time - t < 604800]
     count = len(user_history[user_id_str])
     if count >= 5: return True, count
@@ -34,66 +27,60 @@ def check_and_add_limit(user_id):
     with open(DATA_FILE, "w") as f: json.dump(user_history, f)
     return False, len(user_history[user_id_str])
 
-# ==========================================
-# --- BOT COMMANDS & HANDLERS ---
-# ==========================================
-async def post_init(application):
-    await application.bot.set_my_commands([BotCommand("start", "Start verification")])
+# --- ADMIN BUTTON LOGIC ---
+async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    status = "✅ Approved" if query.data == "approve" else "❌ Declined"
+    new_text = query.message.text.replace("⏳ Pending", status)
+    await query.edit_message_text(text=new_text, parse_mode='Markdown')
+    
+    match = re.search(r"ID: (\d+)", query.message.text)
+    if match:
+        user_id = match.group(1)
+        try: await context.bot.send_message(chat_id=user_id, text=f"Status Update: {status}")
+        except: pass
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    if user_id == TARGET_ADMIN_ID:
-        await update.message.reply_text("👑 Admin Bot Ready!")
-    else:
-        await update.message.reply_text("🌟 *Welcome to Web3 Creators Verification!* 🌟\n\nSend your Twitter/X profile link to get verified.", parse_mode='Markdown')
+    text = update.message.text
+    
+    # ADMIN LOGIC
+    if user_id == TARGET_ADMIN_ID: return
 
-async def handle_buttons_and_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    text = update.message.text if update.message.text else "No text"
-
-    # Admin Panel Logic
-    if user_id == TARGET_ADMIN_ID:
-        if update.message.reply_to_message and update.message.reply_to_message.text:
-            match = re.search(r"User ID: (\d+)", update.message.reply_to_message.text)
-            if match:
-                target_id = int(match.group(1))
-                try:
-                    await context.bot.send_message(chat_id=target_id, text=f"🎉 *Congratulations!*\n\n{text}", parse_mode='Markdown')
-                    await update.message.reply_text("✅ Sent!")
-                except: await update.message.reply_text("❌ Error!")
-        return
-
-    # User Logic
+    # USER LOGIC
     is_limited, count = check_and_add_limit(user_id)
     if is_limited:
-        await update.message.reply_text("🙏 *Apologies! Limit Reached.* Please try again after 7 days.", parse_mode='Markdown')
+        await update.message.reply_text("🙏 Limit Reached. Try again in 7 days.")
         return
 
-    await update.message.reply_text(f"📝 *Application Submitted! ({count}/5)*", parse_mode='Markdown')
+    # User ko Counter dikhao
+    await update.message.reply_text(f"📝 Application Submitted! ({count}/5)")
     
-    # Admin Panel Format (Jaise aapko chahye tha)
-    username = update.message.from_user.username
-    user_mention = f"@{username}" if username else "No Username"
+    # Admin ko Clean Buttons wala layout dikhao
+    keyboard = [[InlineKeyboardButton("✅ Approve", callback_data="approve"), 
+                 InlineKeyboardButton("❌ Decline", callback_data="decline")]]
+    
     admin_alert = (
-        f"📩 *New Request ({count}/5)*\n"
-        f"👤 *User:* {user_mention}\n"
-        f"🆔 *User ID:* {user_id}\n\n"
-        f"📄 *Data:* {text}"
+        f"🚨 **New Creator Application** 🚨\n\n"
+        f"👤 User: @{update.message.from_user.username}\n"
+        f"🆔 ID: {user_id}\n"
+        f"🔗 Profile: {text}\n\n"
+        f"**Status:** ⏳ Pending"
     )
-    await context.bot.send_message(chat_id=TARGET_ADMIN_ID, text=admin_alert, parse_mode='Markdown')
+    await context.bot.send_message(chat_id=TARGET_ADMIN_ID, text=admin_alert, 
+                                   parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
-# ==========================================
-# --- FLASK SERVER (Render 24/7) ---
-# ==========================================
+# --- FLASK SERVER ---
 app = Flask(__name__)
 @app.route('/')
 def home(): return "Bot is running!"
-
 def run_server(): app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
 
 if __name__ == '__main__':
     Thread(target=run_server).start()
-    bot_app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
-    bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(MessageHandler(filters.TEXT, handle_buttons_and_logic))
+    bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
+    bot_app.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("Send your X profile link!")))
+    bot_app.add_handler(CallbackQueryHandler(button_click))
+    bot_app.add_handler(MessageHandler(filters.TEXT, handle_request))
     bot_app.run_polling(drop_pending_updates=True)
