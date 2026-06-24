@@ -43,59 +43,53 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     status = "✅ Approved" if query.data == "approve" else "❌ Declined"
     
-    # Check karein ke message photo hai ya text
     is_photo = bool(query.message.photo)
     current_text = query.message.caption if is_photo else query.message.text
     
     if not current_text: return
-    new_text = current_text.replace("⏳ Pending", status)
+    new_text = current_text.replace("Status: ⏳ Pending", f"Status: {status}")
     
     try:
-        # Buttons hata kar status update karega
         if is_photo:
             await query.edit_message_caption(caption=new_text)
         else:
             await query.edit_message_text(text=new_text)
     except: pass
     
-    # User ko notification bhejna
+    # ------------------------------------
+    # APPROVAL MESSAGE & DECLINE LOGIC
+    # ------------------------------------
     match = re.search(r"ID: (\d+)", current_text)
     if match:
         user_id = match.group(1)
+        # Sirf Approve hone par message jayega, decline par kuch nahi jayega
         if query.data == "approve":
-            msg = "🎉 *Congratulations!* Your application has been Approved. Please wait for the Admin to send you the link."
-        else:
-            msg = "❌ Your application was Declined."
-            
-        try: await context.bot.send_message(chat_id=user_id, text=msg, parse_mode='Markdown')
-        except: pass
+            approval_msg = (
+                "🎉 *Congratulations! Your application has been Approved.*\n\n"
+                "Welcome to the Exclusive Community of Web3 Creators 🚀\n\n"
+                "Exclusive Community for web3 Creators\n"
+                "TG community: https://t.me/+CYbefSUioG5iNDU0\n"
+                "X/Twitter: x.com/CreatorsClubw3"
+            )
+            try: 
+                await context.bot.send_message(
+                    chat_id=user_id, 
+                    text=approval_msg, 
+                    parse_mode='Markdown', 
+                    disable_web_page_preview=True
+                )
+            except: pass
 
 # --- MAIN MESSAGE HANDLER ---
 async def handle_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     text = update.message.text if update.message.text else "No text"
 
-    # ------------------------------------
-    # 1. ADMIN LOGIC (Reply to send link)
-    # ------------------------------------
     if user_id == TARGET_ADMIN_ID:
-        if update.message.reply_to_message:
-            replied_msg = update.message.reply_to_message
-            # Photo aur Text dono ko handle karega
-            original_text = replied_msg.caption if replied_msg.photo else replied_msg.text
-            
-            if original_text:
-                match = re.search(r"ID: (\d+)", original_text)
-                if match:
-                    target_id = int(match.group(1))
-                    try:
-                        await context.bot.send_message(chat_id=target_id, text=f"🔗 *Here is your Link:*\n\n{text}", parse_mode='Markdown')
-                        await update.message.reply_text("✅ Link sent to the user successfully!")
-                    except: await update.message.reply_text("❌ Failed to send link.")
-        return
+        return # Admin manually kuch likhega to ignore kar dega
 
     # ------------------------------------
-    # 2. NORMAL USER LOGIC
+    # NORMAL USER LOGIC
     # ------------------------------------
     is_limited, count = check_and_add_limit(user_id)
     if is_limited:
@@ -105,12 +99,11 @@ async def handle_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📝 *Application Submitted! ({count}/5)*\n\nPlease wait for the Admin to review.", parse_mode='Markdown')
     
     # ------------------------------------
-    # 3. PFP ATTACHMENT & ADMIN NOTIFICATION
+    # PFP ATTACHMENT & ADMIN NOTIFICATION
     # ------------------------------------
     profile_link = text
     clean_user = ""
     
-    # Link se username nikalna
     if "x.com" in text or "twitter.com" in text:
         match = re.search(r"(?:x\.com|twitter\.com)/([^/?]+)", text)
         if match: clean_user = match.group(1)
@@ -132,7 +125,6 @@ async def handle_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Status: ⏳ Pending"
     )
     
-    # API ke zariye direct PFP download kar ke attach karna
     try:
         if clean_user:
             pfp_url = f"https://unavatar.io/twitter/{clean_user}"
@@ -143,9 +135,8 @@ async def handle_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
         else:
-            raise Exception("No Username found")
-    except Exception as e:
-        # Agar photo fetch na ho sakay, toh simple text bhej dega
+            raise Exception("No Username")
+    except:
         await context.bot.send_message(
             chat_id=TARGET_ADMIN_ID, 
             text=admin_alert, 
@@ -157,10 +148,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id == TARGET_ADMIN_ID:
         await update.message.reply_text("👑 Admin Bot Ready!")
     else:
+        # Example line remove kar di gayi hai
         welcome_msg = (
             "🌟 *Welcome to Web3 Creators Verification!* 🌟\n\n"
-            "Please send your **Twitter/X Username** or **Profile Link** to get verified.\n"
-            "_(Example: @comradexbt OR https://x.com/comradexbt)_"
+            "Please send your **Twitter/X Username** or **Profile Link** to get verified."
         )
         await update.message.reply_text(welcome_msg, parse_mode='Markdown')
 
