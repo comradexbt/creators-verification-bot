@@ -10,11 +10,8 @@ logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = "TELEGRAM_BOT_TOKEN_PLACEHOLDER"
 TARGET_ADMIN_ID = 7323039280
 
-user_images = {}
-user_states = {}
-
 # ==========================================
-# --- RATE LIMITER ---
+# --- RATE LIMITER (JSON FILE) ---
 # ==========================================
 DATA_FILE = "rate_limits.json"
 user_history = {}
@@ -23,13 +20,13 @@ if os.path.exists(DATA_FILE):
     try:
         with open(DATA_FILE, "r") as f:
             user_history = json.load(f)
-    except:
-        pass
+    except: pass
 
 def check_and_add_limit(user_id):
     user_id_str = str(user_id)
     current_time = time.time()
     if user_id_str not in user_history: user_history[user_id_str] = []
+    # 7 din ki limit
     user_history[user_id_str] = [t for t in user_history[user_id_str] if current_time - t < 604800]
     count = len(user_history[user_id_str])
     if count >= 5: return True, count
@@ -38,25 +35,25 @@ def check_and_add_limit(user_id):
     return False, len(user_history[user_id_str])
 
 # ==========================================
-# --- BOT FUNCTIONS ---
+# --- BOT COMMANDS & HANDLERS ---
 # ==========================================
 async def post_init(application):
-    await application.bot.set_my_commands([BotCommand("start", "Start the verification process")])
+    await application.bot.set_my_commands([BotCommand("start", "Start verification")])
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     if user_id == TARGET_ADMIN_ID:
         await update.message.reply_text("👑 Admin Bot Ready!")
     else:
-        welcome_msg = "🌟 *Welcome to Web3 Creators Verification!* 🌟\n\nSend your Twitter/X profile link to get verified."
-        await update.message.reply_text(welcome_msg, parse_mode='Markdown')
+        await update.message.reply_text("🌟 *Welcome to Web3 Creators Verification!* 🌟\n\nSend your Twitter/X profile link to get verified.", parse_mode='Markdown')
 
 async def handle_buttons_and_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     text = update.message.text if update.message.text else "No text"
 
+    # Admin Panel Logic
     if user_id == TARGET_ADMIN_ID:
-        if update.message.reply_to_message:
+        if update.message.reply_to_message and update.message.reply_to_message.text:
             match = re.search(r"User ID: (\d+)", update.message.reply_to_message.text)
             if match:
                 target_id = int(match.group(1))
@@ -66,16 +63,27 @@ async def handle_buttons_and_logic(update: Update, context: ContextTypes.DEFAULT
                 except: await update.message.reply_text("❌ Error!")
         return
 
+    # User Logic
     is_limited, count = check_and_add_limit(user_id)
     if is_limited:
         await update.message.reply_text("🙏 *Apologies! Limit Reached.* Please try again after 7 days.", parse_mode='Markdown')
         return
 
     await update.message.reply_text(f"📝 *Application Submitted! ({count}/5)*", parse_mode='Markdown')
-    await context.bot.send_message(chat_id=TARGET_ADMIN_ID, text=f"📩 *New Request ({count}/5)*\n🆔 User ID: {user_id}\n📄 {text}", parse_mode='Markdown')
+    
+    # Admin Panel Format (Jaise aapko chahye tha)
+    username = update.message.from_user.username
+    user_mention = f"@{username}" if username else "No Username"
+    admin_alert = (
+        f"📩 *New Request ({count}/5)*\n"
+        f"👤 *User:* {user_mention}\n"
+        f"🆔 *User ID:* {user_id}\n\n"
+        f"📄 *Data:* {text}"
+    )
+    await context.bot.send_message(chat_id=TARGET_ADMIN_ID, text=admin_alert, parse_mode='Markdown')
 
 # ==========================================
-# --- DUMMY FLASK SERVER (For Render) ---
+# --- FLASK SERVER (Render 24/7) ---
 # ==========================================
 app = Flask(__name__)
 @app.route('/')
