@@ -1,4 +1,4 @@
-import os, logging, re, math, asyncio, requests, time
+import os, logging, re, math, asyncio, requests, time, json
 from io import BytesIO
 from flask import Flask
 from threading import Thread
@@ -13,35 +13,59 @@ TARGET_ADMIN_ID = 7323039280
 user_images = {}
 user_states = {}
 
-# --- RATE LIMIT SETTINGS ---
-user_request_history = {}
+# ==========================================
+# --- RATE LIMIT SETTINGS (JSON FILE BASED) ---
+# ==========================================
 MAX_REQUESTS = 5
 TIME_WINDOW_DAYS = 7
 TIME_WINDOW_SECONDS = TIME_WINDOW_DAYS * 24 * 60 * 60
+DATA_FILE = "rate_limits.json"
+
+def load_limits():
+    """File se purana data load karega"""
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r") as f:
+            try:
+                return json.load(f)
+            except:
+                return {}
+    return {}
+
+def save_limits(data):
+    """Data ko file mein save karega taake restart par delete na ho"""
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f)
+
+# Global dictionary
+user_request_history = load_limits()
 
 def is_user_rate_limited(user_id):
-    """Checks if a user has exceeded 5 requests in the last 7 days."""
+    """Check karega ke limit cross hui hai ya nahi"""
+    user_id_str = str(user_id) # JSON mein keys hamesha string hoti hain
     current_time = time.time()
     
-    # Initialize user history if they are new
-    if user_id not in user_request_history:
-        user_request_history[user_id] = []
+    # Agar user naya hai
+    if user_id_str not in user_request_history:
+        user_request_history[user_id_str] = []
         
-    # Remove old requests that are past the 7-day window
-    user_request_history[user_id] = [
-        t for t in user_request_history[user_id] 
+    # Purane messages (jo 7 din se pehle ke hain) unhe list se nikal do
+    user_request_history[user_id_str] = [
+        t for t in user_request_history[user_id_str] 
         if current_time - t < TIME_WINDOW_SECONDS
     ]
     
-    # Check if they hit the limit
-    if len(user_request_history[user_id]) >= MAX_REQUESTS:
-        return True # Limited!
+    # Check limit (Agar 5 ya us se zyada ho gaye)
+    if len(user_request_history[user_id_str]) >= MAX_REQUESTS:
+        return True # Limit poori ho gayi!
     
-    # Add new request timestamp and allow
-    user_request_history[user_id].append(current_time)
+    # Agar limit poori nahi hui, to naya time add kar do aur file mein save kar do
+    user_request_history[user_id_str].append(current_time)
+    save_limits(user_request_history)
     return False
 
+# ==========================================
 # --- DYNAMIC KEYBOARDS ---
+# ==========================================
 def get_main_keyboard():
     return ReplyKeyboardMarkup([[KeyboardButton("🖼️ Start Collage Maker")]], resize_keyboard=True, persistent=True)
 
@@ -51,7 +75,9 @@ def get_collage_keyboard():
         ["🔙 Back to PFP Mode"]
     ], resize_keyboard=True, persistent=True)
 
+# ==========================================
 # --- COLLAGE LOGIC ---
+# ==========================================
 def create_collage(image_list, text_watermark="Creators Club"):
     images = []
     for img_data in image_list:
@@ -74,7 +100,9 @@ def create_collage(image_list, text_watermark="Creators Club"):
     output.seek(0)
     return output
 
+# ==========================================
 # --- HANDLERS ---
+# ==========================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     
@@ -91,27 +119,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_buttons_and_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    
-    # Agar message mein text nahi hai (jaise sirf photo ho without caption), toh avoid error
     text = update.message.text if update.message.text else "No text/Link"
 
-    # ==========================================
-    # 1. NORMAL USER LOGIC (WITH RATE LIMITS)
-    # ==========================================
+    # --- 1. NORMAL USER LOGIC (WITH RATE LIMITS) ---
     if user_id != TARGET_ADMIN_ID:
         
-        # SAB SE PEHLE LIMIT CHECK KAREIN:
         if is_user_rate_limited(user_id):
-            # Agar 5 dafa limit poori ho gayi hai, toh ye message jaye:
             await update.message.reply_text("🚨 Your limit has been reached. Please try again after 7 days.")
-            
-            # RETURN bohat zaroori hai! Ye code ko yahin rok dega aur admin ko request nahi jayegi.
-            return 
+            return # Yahan code ruk jaye ga aur admin ko msg nahi jaye ga
 
-        # Agar limit bachi hui hai, toh ye chale ga:
         await update.message.reply_text("⏳ Application submitted. Please wait.")
         
-        # Admin ko message bhejne ki logic:
         username = update.message.from_user.username
         user_mention = f"@{username}" if username else f"User ID: {user_id}"
         
@@ -119,16 +137,11 @@ async def handle_buttons_and_logic(update: Update, context: ContextTypes.DEFAULT
             chat_id=TARGET_ADMIN_ID, 
             text=f"📩 New Request from {user_mention}:\n\n{text}"
         )
-        
-        # Normal user ka kaam yahan khatam, isliye return:
         return 
 
-    # ==========================================
-    # 2. ADMIN LOGIC (NO LIMITS - Sirf aapke liye)
-    # ==========================================
+    # --- 2. ADMIN LOGIC (NO LIMITS) ---
     state = user_states.get(user_id, "INSTANT_PFP")
 
-    # Buttons Handle karna
     if text == "🖼️ Start Collage Maker":
         user_states[user_id] = "COLLAGE_MAKER"
         await update.message.reply_text("🎨 Mode: Collage. Link/Photo bhejein.", reply_markup=get_collage_keyboard())
@@ -147,27 +160,19 @@ async def handle_buttons_and_logic(update: Update, context: ContextTypes.DEFAULT
         user_images[user_id] = []
         return
 
-    # Collage Mode Data Save
     if state == "COLLAGE_MAKER":
         if update.message.photo:
-            # (Yahan aapki photo download logic ayegi)
             pass
         elif "x.com" in text or "twitter.com" in text:
-            # (Yahan aapki link add logic ayegi)
             pass
         return
 
-    # Default PFP Mode
     if "x.com" in text or "twitter.com" in text:
-        # (Yahan aapki direct PFP logic ayegi)
         pass
 
 if __name__ == '__main__':
-    # Flask code agar host karne ke liye chahiye to yahan add kar lein
     bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
-    
     bot_app.add_handler(CommandHandler("start", start))
-    # filters.TEXT aur filters.PHOTO dono ko allow karega
     bot_app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_buttons_and_logic)) 
-    
+    print("Bot is running...")
     bot_app.run_polling()
