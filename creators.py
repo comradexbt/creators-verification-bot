@@ -1,35 +1,104 @@
-import telebot
-import os
-import time
+import os, logging, re, math, asyncio, requests
+from io import BytesIO
+from flask import Flask
+from threading import Thread
+from PIL import Image, ImageDraw, ImageFont
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-bot = telebot.TeleBot(TOKEN)
+logging.basicConfig(level=logging.INFO)
+BOT_TOKEN = "TELEGRAM_BOT_TOKEN_PLACEHOLDER"
+TARGET_ADMIN_ID = 7323039280
 
-# Jab bot start ho
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    bot.reply_to(message, "Bot Online! Links bhejein...")
+user_images = {}
+user_states = {}
 
-# Links process karna
-@bot.message_handler(func=lambda message: True)
-def process_links(message):
-    if str(message.chat.id) != "7323039280":
+# --- DYNAMIC KEYBOARDS ---
+def get_main_keyboard():
+    return ReplyKeyboardMarkup([[KeyboardButton("🖼️ Start Collage Maker")]], resize_keyboard=True, persistent=True)
+
+def get_collage_keyboard():
+    return ReplyKeyboardMarkup([
+        ["✅ Make Collage", "🗑️ Cancel Collage"],
+        ["🔙 Back to PFP Mode"]
+    ], resize_keyboard=True, persistent=True)
+
+# --- COLLAGE LOGIC ---
+def create_collage(image_list, text_watermark="Creators Club"):
+    # (Pehle wala collage code yahan waisa hi rahay ga)
+    images = []
+    for img_data in image_list:
+        try:
+            if isinstance(img_data, str): 
+                response = requests.get(img_data, timeout=5)
+                img = Image.open(BytesIO(response.content)).convert("RGBA")
+            else: 
+                img = Image.open(BytesIO(img_data)).convert("RGBA")
+            img = img.resize((150, 150))
+            images.append(img)
+        except: continue
+    if not images: return None
+    cols = math.ceil(math.sqrt(len(images)))
+    rows = math.ceil(len(images) / cols)
+    collage = Image.new('RGBA', (cols * 150, rows * 150), (0, 0, 0, 255))
+    for idx, img in enumerate(images): collage.paste(img, ((idx % cols) * 150, (idx // cols) * 150))
+    output = BytesIO()
+    collage.convert("RGB").save(output, format='JPEG')
+    output.seek(0)
+    return output
+
+# --- HANDLERS ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if user_id != TARGET_ADMIN_ID: return
+    user_states[user_id] = "INSTANT_PFP"
+    user_images[user_id] = []
+    await update.message.reply_text("👋 Bot Ready!", reply_markup=get_main_keyboard())
+
+async def handle_buttons_and_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if user_id != TARGET_ADMIN_ID: return
+    text = update.message.text
+    state = user_states.get(user_id, "INSTANT_PFP")
+
+    # 1. Buttons Handle karna
+    if text == "🖼️ Start Collage Maker":
+        user_states[user_id] = "COLLAGE_MAKER"
+        await update.message.reply_text("🎨 Mode: Collage. Link/Photo bhejein.", reply_markup=get_collage_keyboard())
+        return
+    elif text == "🔙 Back to PFP Mode":
+        user_states[user_id] = "INSTANT_PFP"
+        await update.message.reply_text("⚡ Mode: Instant PFP.", reply_markup=get_main_keyboard())
+        return
+    elif text == "🗑️ Cancel Collage":
+        user_images[user_id] = []
+        await update.message.reply_text("🗑️ List Saaf.")
+        return
+    elif text == "✅ Make Collage":
+        img = create_collage(user_images[user_id])
+        if img: await context.bot.send_photo(chat_id=user_id, photo=img)
+        user_images[user_id] = []
         return
 
-    links = message.text.split()
-    for item in links:
-        username = item.replace("@", "").split("/")[-1].split("?")[0]
-        # Direct URL (size=original for HQ)
-        image_url = f"https://unavatar.io/twitter/{username}?size=original"
-        
-        try:
-            bot.send_photo(message.chat.id, image_url, caption=f"✨ @{username}")
-            time.sleep(1.5)
-        except:
-            bot.reply_to(message, f"❌ Nahi mila: {username}")
+    # 2. Collage Mode mein Data Save karna
+    if state == "COLLAGE_MAKER":
+        if update.message.photo:
+            # (Photo download logic)
+            pass
+        elif "x.com" in text or "twitter.com" in text:
+            # (Link add logic)
+            pass
+        return
 
-# GitHub Actions ke liye polling ka sahi tareeqa
-if __name__ == "__main__":
-    print("Polling started...")
-    # none_stop=True aur timeout se bot stable rahega
-    bot.polling(none_stop=True, timeout=60)
+    # 3. Default PFP Mode (Sirf tab chalay ga jab upar kuch nahi hoga)
+    if "x.com" in text or "twitter.com" in text:
+        # (Direct PFP logic)
+        pass
+
+if __name__ == '__main__':
+    # ... Flask ...
+    bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
+    bot_app.add_handler(CommandHandler("start", start))
+    # Yahan filter sahi set karna hai: Button pehle, phir normal text
+    bot_app.add_handler(MessageHandler(filters.TEXT, handle_buttons_and_logic)) 
+    bot_app.run_polling()
