@@ -5,8 +5,10 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotComm
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
 logging.basicConfig(level=logging.INFO)
-BOT_TOKEN = "TELEGRAM_BOT_TOKEN_PLACEHOLDER"
-TARGET_ADMIN_ID = 7323039280
+
+# Tokens aur IDs ab Environment Variables se aayenge
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+TARGET_ADMIN_ID = int(os.environ.get("TARGET_ADMIN_ID", 0))
 
 # ==========================================
 # --- RATE LIMITER (JSON) ---
