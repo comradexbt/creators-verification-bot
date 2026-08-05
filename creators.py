@@ -7,8 +7,8 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 logging.basicConfig(level=logging.INFO)
 
 # Tokens aur IDs ab Environment Variables se aayenge
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN_PLACEHOLDER")
-TARGET_ADMIN_ID = int(os.environ.get("7323039280", 0))
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TARGET_ADMIN_ID = int(os.environ.get("TARGET_ADMIN_ID", "7323039280"))
 
 # ==========================================
 # --- RATE LIMITER (JSON) ---
