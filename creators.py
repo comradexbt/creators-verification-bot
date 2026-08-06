@@ -7,7 +7,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 logging.basicConfig(level=logging.INFO)
 
 # Tokens aur IDs ab Environment Variables se aayenge
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("BOT_TOKEN") or ""
 TARGET_ADMIN_ID = int(os.environ.get("TARGET_ADMIN_ID", "7323039280"))
 
 # ==========================================
