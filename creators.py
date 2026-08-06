@@ -165,10 +165,25 @@ app = Flask(__name__)
 def home(): return "Bot is running!"
 def run_server(): app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
 
-if __name__ == '__main__':
-    Thread(target=run_server).start()
+def start_bot():
+    """Start the Telegram bot (polling). Safe to call from __main__ OR when
+    this module is imported by gunicorn/PandaStack (Flask auto-detect)."""
+    if not BOT_TOKEN:
+        print("ERROR: TELEGRAM_BOT_TOKEN is not set in environment variables.")
+        return
     bot_app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CallbackQueryHandler(button_click))
     bot_app.add_handler(MessageHandler(filters.TEXT, handle_request))
     bot_app.run_polling(drop_pending_updates=True)
+
+
+if __name__ == '__main__':
+    # Direct run: `python creators.py` — Flask in a thread, bot in main thread.
+    Thread(target=run_server).start()
+    start_bot()
+elif os.environ.get("BOT_AUTOSTART", "1") == "1":
+    # Imported by gunicorn/PandaStack (Flask auto-detect): __main__ never runs,
+    # so start the bot in a background thread. gunicorn serves the Flask app.
+    # Set BOT_AUTOSTART=0 to disable (e.g. multiple gunicorn workers).
+    Thread(target=start_bot, daemon=True).start()
